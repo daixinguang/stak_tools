@@ -3,6 +3,7 @@ import json
 import ctypes
 import socket
 import base64
+import argparse
 import pandas as pd
 from tqdm import tqdm
 
@@ -377,10 +378,13 @@ class CheckDLL():
                     print(f'frame: {data_sparse_x86.baseProtocol['frameCount']}, x64_index:{i}, fs not match............')
 
 def main():
-    dll_x64_fp = r'./dll/fradar.dll'
-    dll_x86_fp = r'./dll/DataProcess.dll'
-    dll_exp = CheckDLL(dll_x64_fp=r'./dll/2_0_0/fradar.dll')
-    dll_exp.check(data_fp=r'data\DTM20250217000263\FRADAR_20240716-172427_482_0.bin')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dll64','-d', type=str, default=r'./dll/fradar.dll')
+    parser.add_argument('--path', '-p', type=str, default=r'data\DTM20250217000263\FRADAR_20240716-172427_482_0.bin')
+    args = parser.parse_args()
+    dll_exp = CheckDLL(dll_x64_fp=args.dll64)
+    dll_exp.check(data_fp=args.path)
+
 if __name__ == '__main__':
     main()
     print('check end...')
