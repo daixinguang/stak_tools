@@ -1,7 +1,6 @@
 import os
 import json
 import ctypes
-import socket
 import base64
 import argparse
 import pandas as pd
@@ -12,15 +11,12 @@ from protocol.sta775s_intel.sta775sProtocol import Sta775sFrame
 # from protocol.sta775s_intel_x86 import EthCombinePack_Str_ACC
 from protocol.sta775s_changan.sta775s_changan_x64 import RdrObjListType_Replay_Fusion
 class CheckDLL():
-    def __init__(self, dll_x64_fp=r'./dll/fradar.dll'):
-        self.track_check_flag = True
-        self.fs_check_flag = True
+    def __init__(self, fradar_win32_fp=r'./dll/fradar.dll', dataprocess_win32_fp=r'./dll/dataprocess.dll', track_check_flag=True, fs_check_flag=True):
         self.max_length = 130000
-        self.port = 12345
-        self.client = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        self.host = socket.gethostname()
-        self.client.connect((self.host, self.port))
-        self.dll_x64 = ctypes.WinDLL(dll_x64_fp)
+        self.track_check_flag = track_check_flag
+        self.fs_check_flag = fs_check_flag
+        self.fradar_win32 = ctypes.WinDLL(fradar_win32_fp)
+        self.datapronces_win32 = ctypes.WinDLL(dataprocess_win32_fp)
         self.track_match_pd = pd.DataFrame(columns=('frame','x64_ID', 'x64_age', 'x64_Heading', 'x64_ObjType', 'x64_obstacle',
                                                     'x64_rx', 'x64_ry', 'x64_RelVelX', 'x64_RelVelY', 'x64_AbsVelX', 'x64_AbsVelY', 
                                                                         'x64_RelAccX', 'x64_RelAccY', 'x64_AbsAccX', 'x64_AbsAccY',
@@ -58,27 +54,18 @@ class CheckDLL():
                 bytes_data = f.read(frame_length)
                 if not data:
                     break
-                data_dict = {
-                    "state": "msg",
-                    "name" : "test",
-                    "max_length" : 130000,
-                    "input_data": base64.b64encode(bytes_data).decode('utf-8')
-                }
-                Message = json.dumps(data_dict, ensure_ascii=False)
-                # decoded_ = base64.b64decode(data_dict["input_data"])
-                # print(len(Message))
-                self.client.send(Message.encode('utf-8'))
-                res_x86 = self.client.recv(131000)
-                res_x64 = self.run64(bytes_data, frame_length, name)
+                
+                res_fradar = self.run_fradar(bytes_data, frame_length, name)
+                res_dataprocess = self.run_dataprocess(bytes_data, frame_length, name)
                 # print(len(res_x86))
                 
                 # 解析x86数据
                 data_sparse_x86 = Sta775sFrame(with_fs=True, with_points=True)
-                data_sparse_x86.decodeProtocol(res_x86)
+                data_sparse_x86.decodeProtocol(res_dataprocess)
                 # print(len(data_sparse_x86))
                 
                 # 解析x64数据
-                data_sparse_x64 = RdrObjListType_Replay_Fusion.from_buffer_copy(res_x64)
+                data_sparse_x64 = RdrObjListType_Replay_Fusion.from_buffer_copy(res_fradar)
                 
                 # 计算x64和x86时间戳的差(ms) 差值在100ms左右
                 # x86_time = (data_sparse_x86.monitorProtocol['syncTime'] - data_sparse_x86.monitorProtocol['od_latency']*100)/(1000*1000)
@@ -117,44 +104,37 @@ class CheckDLL():
                 self.track_match_pd['diff_length'] = (self.track_match_pd['x64_length'] - self.track_match_pd['x86_length']).abs()
                 self.track_match_pd['diff_height'] = (self.track_match_pd['x64_height'] - self.track_match_pd['x86_height']).abs()
                 self.track_unmatch_pd = pd.concat([self.track_unmatch_pd, pd.DataFrame(self.track_unmatch_list)])
-                
-                self.save_csv(self.track_match_pd, data_fp.split('.')[-2] + '_match_track.csv')
-                self.save_csv(self.track_unmatch_pd, data_fp.split('.')[-2] + '_unmatch_track.csv')
-                print(f'track_match_pd len: {len(self.track_match_pd)}')
-                print(f'track_unmatch_pd len: {len(self.track_unmatch_pd)}')
+                self.track_match_pd.to_csv(data_fp.split('.')[-2] + '_match_track.csv', index=False)
+                self.track_unmatch_pd.to_csv(data_fp.split('.')[-2] + '_unmatch_track.csv', index=False)
             if self.fs_check_flag:
                 self.fs_match_pd = pd.concat([self.fs_match_pd, pd.DataFrame(self.fs_match_list)])
                 self.fs_unmatch_pd = pd.concat([self.fs_unmatch_pd, pd.DataFrame(self.fs_unmatch_list)])
-                self.save_csv(self.fs_match_pd, data_fp.split('.')[-2] + '_match_fs.csv')
-                self.save_csv(self.fs_unmatch_pd, data_fp.split('.')[-2] + '_unmatch_fs.csv')
-                print(f'fs_match_pd len: {len(self.fs_match_pd)}')
-                print(f'fs_unmatch_pd len: {len(self.fs_unmatch_pd)}')
-            # bin文件读取结束,关闭socket通信.
-            data_dict = {
-                "state": "off",
-                "name" : "test",
-                "max_length" : 130000,
-                "input_data": 'None'
-            }
-            Message = json.dumps(data_dict, ensure_ascii=False)
-            # print(len(Message))
-            self.client.send(Message.encode('utf-8'))
-            close_msg = self.client.recv(131000)
-            print(close_msg.decode('utf-8'))
+                self.fs_match_pd.to_csv(data_fp.split('.')[-2] + '_match_fs.csv', index=False)
+                self.fs_unmatch_pd.to_csv(data_fp.split('.')[-2] + '_unmatch_fs.csv', index=False)
 
 
-    def run64(self, input_data, input_length, name=b'test'):
+    def run_dataprocess(self, input_data, input_length, name=b'test'):
         input_data = (ctypes.c_uint8 * self.max_length)(*input_data)
         output_data = (ctypes.c_uint8 * self.max_length)()
         # if name is a string, it will be converted to bytes
         if isinstance(name, str):
             name = name.encode('utf-8')
-        tmp = self.dll_x64.fradar(input_data, input_length, output_data, self.max_length, name)
+        tmp = self.datapronces_win32.dataProcess(input_data, input_length, output_data, self.max_length, name)
         if tmp > 0:
             return ctypes.string_at(output_data, tmp)
         else:
-            raise Exception("error in dll")
-        
+            raise Exception("error in dataprocess dll")
+    def run_fradar(self, input_data, input_length, name=b'test'):
+        input_data = (ctypes.c_uint8 * self.max_length)(*input_data)
+        output_data = (ctypes.c_uint8 * self.max_length)()
+        # if name is a string, it will be converted to bytes
+        if isinstance(name, str):
+            name = name.encode('utf-8')
+        tmp = self.fradar_win32.fradar(input_data, input_length, output_data, self.max_length, name)
+        if tmp > 0:
+            return ctypes.string_at(output_data, tmp)
+        else:
+            raise Exception("error in fradar dll")
     def track_check(self, data_sparse_x64, data_sparse_x86):
         # 校验目标(changan_x64最多32个目标所以要让x64去遍历x86)
         for i in range(data_sparse_x64.SensorStatusFlags_st.RadarObj_num_u32):
@@ -355,7 +335,7 @@ class CheckDLL():
                                 'x64_height': data_sparse_x64.SensorObject_st[i].Height_f32
                             })
             if not match_list:
-                print(f'frame: {data_sparse_x86.baseProtocol['frameCount']}, x64_index:{i}, fs not match............')
+                print(f"frame: {data_sparse_x86.baseProtocol['frameCount']}, x64_index:{i}, track not match............")
             # print(f'frame:{data_sparse_x86.baseProtocol['frameCount']}, current_radar_time:{data_sparse_x64.SensorStatusFlags_st.current_radar_time}.............................................')
     
     def fs_check(self, data_sparse_x64, data_sparse_x86):
@@ -380,28 +360,16 @@ class CheckDLL():
                         'x86_range': data_sparse_x86.fsProtocol['fsList'][i][0] * 0.1,
                         'x86_confidence': data_sparse_x86.fsProtocol['fsList'][i][1],
                     })
-                    print(f'frame: {data_sparse_x86.baseProtocol['frameCount']}, x64_index:{i}, fs not match............')
+                    print(f"frame: {data_sparse_x86.baseProtocol['frameCount']}, x64_index:{i}, fs not match............")
 
-
-    def save_csv(self, df, filename):
-        # 检查文件是否存在
-        file_exists = os.path.exists(filename)
-        # 尝试保存
-        try:
-            df.to_csv(filename, index=False)
-            # 根据检查结果打印
-            if file_exists:
-                print(f'已覆盖原文件{filename}')
-            else:
-                print(f'已保存文件{filename}')
-        except Exception as e:
-            print(f'保存文件时出错：{e}')
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dll64','-d', type=str, default=r'dll\20250314\2_0_0_20250314_1\fradar.dll')
-    parser.add_argument('--path', '-p', type=str, default=r'data\CCRS\20240711_103104_684-CCRS-100%-20kph-1\dat\20240711_103104_868_9157-CCRS-100%-20kph-1-GPS.bin')
+    parser.add_argument('--dll64','-d6', type=str, default='dll\\2_0_0_20250312_14\\fradar.dll')
+    parser.add_argument('--dll32','-d3', type=str, default='dll\\2_0_0_20250312_14\\DataProcess.dll')
+    parser.add_argument('--path', '-p', type=str, default='data\DTM20250217000264\FRADAR_20240730-190513_075_0.bin')
     args = parser.parse_args()
-    dll_exp = CheckDLL(dll_x64_fp=args.dll64)
+    # 注意 track_check_flag 和 fs_check_flag 是不是true
+    dll_exp = CheckDLL(fradar_win32_fp=args.dll64, dataprocess_win32_fp=args.dll32)
     dll_exp.check(data_fp=args.path)
 
 if __name__ == '__main__':

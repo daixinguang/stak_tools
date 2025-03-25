@@ -1,85 +1,68 @@
 import os
+import struct
 import ctypes
+import argparse
 from tqdm import tqdm
 from util import binTools as bt
 
 class AlglibDll:
-    def __init__(self):
-        # load dll
-        self.dll_x64 = None
-        # self.dll_x86 = None
+    def __init__(self, 
+                 bitflag: str, 
+                 dll_fp: str = r'./dll/2_0_0/DataProcess.dll'):
         self.max_length = 130000
-
-    def run_file64(self, data_fp=r'data\FRADAR_20240730-190513_075_0.bin', dll_fp=r'./dll/fradar.dll'):
-        self.dll_x64 = ctypes.WinDLL(dll_fp)
-        with open(data_fp, 'rb') as f:
-            totalFrameHeader = f.read(2)
-            totleVersion = f.read(1)
-            totalDataLength = f.read(2)
-            frame_length = bt.unpackUint16(totalDataLength)
-            # f.seek(3024 * frame_length)
-            f.seek(0)
-            data = f.read(frame_length)
-            # cal frame num: file total length / frame length
-            frame_num = int(os.path.getsize(data_fp) / frame_length)
-            name = b'test'
-
-            # run speed test
-            for i in tqdm(range(frame_num)):
-                data = f.read(frame_length)
-                if not data:
-                    break
-                res = self.run64(data, frame_length, name)
-
-    def run64(self, input_data, input_length, name=b'test'):
-        input_data = (ctypes.c_uint8 * self.max_length)(*input_data)
-        output_data = (ctypes.c_uint8 * self.max_length)()
-        # if name is a string, it will be converted to bytes
-        if isinstance(name, str):
-            name = name.encode('utf-8')
-        tmp = self.dll_x64.fradar(input_data, input_length, output_data, self.max_length, name)
-        if tmp > 0:
-            return output_data[:tmp]
+        # load dll
+        self.bitflag = bitflag
+        if self.bitflag=='32bit':
+            self.dll_x86 = ctypes.WinDLL(dll_fp)
+        elif self.bitflag=='64bit':
+            self.dll_x64 = ctypes.WinDLL(dll_fp)
         else:
-            raise Exception("error in dll")
-        
-    def run_file86(self, data_fp=r'data\FRADAR_20240730-190513_075_0.bin', dll_fp=r'./dll/DataProcess.dll'):
-        self.dll_x86 = ctypes.WinDLL(dll_fp)
+            raise Exception('must choice bitflag')
 
-        with open(data_fp, 'rb') as f:
-            totalFrameHeader = f.read(2)
-            totleVersion = f.read(1)
-            totalDataLength = f.read(2)
-            frame_length = bt.unpackUint16(totalDataLength)
-            # f.seek(3024 * frame_length)
-            f.seek(0)
-            data = f.read(frame_length)
-            # cal frame num: file total length / frame length
-            frame_num = int(os.path.getsize(data_fp) / frame_length)
-            name = b'test'
+    def run(self, data_bin:bytes):
+        if self.bitflag=='32bit':
+            return self.dll_x86.dataprocess(data_bin)
+        elif self.bitflag=='64bit':
+            return self.dll_x64.fradar(data_bin)
 
-            # run speed test
-            for i in tqdm(range(frame_num)):
-                data = f.read(frame_length)
-                if not data:
-                    break
-                res = self.run86(data, frame_length, name)
-    def run86(self, input_data, input_length, name=b'test'):
-        input_data = (ctypes.c_uint8 * self.max_length)(*input_data)
-        output_data = (ctypes.c_uint8 * self.max_length)()
-        # if name is a string, it will be converted to bytes
-        if isinstance(name, str):
-            name = name.encode('utf-8')
-        tmp = self.dll_x86.dataProcess(input_data, input_length, output_data, self.max_length, name)
-        if tmp > 0:
-            return output_data[:tmp]
-        else:
-            raise Exception("error in dll")
+def load_data(path):
+    data_bin = open(path, 'rb').read()
+    # 解析文件头信息 Protocol_Head_Str_ACC
+    Protocol_Head_Str_ACC_format = '<HBI'
+    totalHead, totalVersion, totalDataLength = struct.unpack_from(Protocol_Head_Str_ACC_format, data_bin, 0)
+    Protocol_Head_Str_ACC_offset=struct.calcsize(Protocol_Head_Str_ACC_format) # 7
+    subHead_format = '<HBH'
+    # 帧头数据 Frame_Head_Date_Str_ACC
+    subHead1, subVersion1, subDataLength1 = struct.unpack_from(subHead_format, data_bin, Protocol_Head_Str_ACC_offset)
+    Frame_Head_Date_Str_ACC_offset=Protocol_Head_Str_ACC_offset + subDataLength1 # 7+81=88
+    # RF_ConfigPara_Str_ACC
+    subHead2, subVersion2, subDataLength2 = struct.unpack_from(subHead_format, data_bin, Frame_Head_Date_Str_ACC_offset)
+    RF_ConfigPara_Str_ACC_offset=Frame_Head_Date_Str_ACC_offset + subDataLength2 # 88+117=205
+    # 雷达状态参数 Radar_Status_Date_Str_ACC
+    subHead3, subVersion3, subDataLength3 = struct.unpack_from(subHead_format, data_bin, RF_ConfigPara_Str_ACC_offset)
+    Radar_Status_Date_Str_ACC_offset=RF_ConfigPara_Str_ACC_offset + subDataLength3 # 205+200=405
+    # 监控数据 MonitorData_DSP_t_ACC
+    subHead4, subVersion4, subDataLength4 = struct.unpack_from(subHead_format, data_bin, Radar_Status_Date_Str_ACC_offset)
+    MonitorData_DSP_t_ACC_offset=Radar_Status_Date_Str_ACC_offset + subDataLength4 # 405+129=534
+    # ECU_Moni_Str_ACC
+    subHead5, subVersion5, subDataLength5 = struct.unpack_from(subHead_format, data_bin, MonitorData_DSP_t_ACC_offset)
+    ECU_Moni_Str_ACC_offset=MonitorData_DSP_t_ACC_offset + subDataLength5 # 534+252=786
+    # ADAS_Monitor_Str
+    subHead6, subVersion6, subDataLength6 = struct.unpack_from(subHead_format, data_bin, ECU_Moni_Str_ACC_offset)
+    ADAS_Monitor_Str_offset=ECU_Moni_Str_ACC_offset + subDataLength6 # 786+1959=2745
+    return data_bin
 def main():
-    dll_x64_fp = r'./dll/fradar.dll'
-    dll_x86_fp = r'./dll/DataProcess.dll'
-    dll_exp = AlglibDll()
-    dll_exp.run_file86()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dll32','-d', type=str, default=r'dll\DataProcess.dll')
+    parser.add_argument('--path','-p', type=str, default=r'data\DTM20250217000263\FRADAR_20240716-172427_482_0.bin')
+    parser.add_argument('--platform','-x', type=str)
+    args = parser.parse_args()
+    if not args.platform:
+        import platform
+        args.platform, _ = platform.architecture()
+    dll = AlglibDll(bitflag=args.platform, dll_fp=args.dll32)
+    load_data(args.path)
+    dll.run()
+
 if __name__ == '__main__':
     main()
-    print('check end...')

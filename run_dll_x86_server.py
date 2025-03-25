@@ -59,7 +59,7 @@ class dll_server:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dll32','-d', type=str, default=r'dll\DataProcess.dll')
+    parser.add_argument('--dll32','-d', type=str, default=r'dll\20250314\2_0_0_20250314_1\DataProcess.dll')
     args = parser.parse_args()
     ds = dll_server(dll_x86_fp=args.dll32)
     ds.run()
